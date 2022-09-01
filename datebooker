@@ -1,0 +1,230 @@
+#!/usr/home/dunc/src/datebooker/venv/bin/python3
+import argparse
+import httplib2
+import os
+import re
+import sys
+import email
+import mimetypes
+import datetime
+import pytz
+from bs4 import BeautifulSoup
+from email.policy import default
+from email import message_from_binary_file
+from apiclient import discovery
+from oauth2client import client
+from oauth2client import tools
+from oauth2client.file import Storage
+from pytz import timezone
+
+timeZone = 'America/Chicago'
+localtz = timezone(timeZone)
+now = datetime.datetime.now(localtz)
+
+parser = argparse.ArgumentParser(parents=[tools.argparser],
+                    description='CLI to Google calendar')
+parser.add_argument("-v", '--verbose', dest='verbose', action='store_true',
+                    help='verbose messages')
+parser.add_argument("-n", '--dryrun', dest='dryrun', action='store_true',
+                    help='dry run without creating an appointment')
+parser.add_argument('--setonappt', nargs='?', type=argparse.FileType('rb'),
+                    const=sys.stdin.buffer, help='process seton email')
+parser.add_argument('--speroappt', nargs='?', type=argparse.FileType('rb'),
+                    const=sys.stdin.buffer, help='process spero email')
+parser.add_argument('word', nargs="*",
+                    help='date time message')
+flags = parser.parse_args()
+
+# If modifying these scopes, delete your previously saved credentials
+# at ~/.credentials/calendar-python-quickstart.json
+SCOPES = 'https://www.googleapis.com/auth/calendar'
+APPLICATION_NAME = 'datebooker'
+CREDENTIAL_FILE = APPLICATION_NAME+'.json'
+CLIENT_SECRET_FILE = APPLICATION_NAME+'_secret.json'
+
+def get_credentials():
+    """Gets valid user credentials from storage.
+
+    If nothing has been stored, or if the stored credentials are invalid,
+    the OAuth2 flow is completed to obtain the new credentials.
+
+    Returns:
+        Credentials, the obtained credential.
+    """
+    home_dir = os.path.expanduser('~')
+    credential_dir = os.path.join(home_dir, '.credentials')
+    if not os.path.exists(credential_dir):
+        os.makedirs(credential_dir)
+    credential_path = os.path.join(credential_dir, CREDENTIAL_FILE)
+    client_secret_path = os.path.join(credential_dir, CLIENT_SECRET_FILE)
+
+    store = Storage(credential_path)
+    credentials = store.get()
+    if not credentials or credentials.invalid:
+        flow = client.flow_from_clientsecrets(client_secret_path, SCOPES)
+        flow.user_agent = APPLICATION_NAME
+        if flags:
+            credentials = tools.run_flow(flow, store, flags)
+        else: # Needed only for compatibility with Python 2.6
+            credentials = tools.run(flow, store)
+    return credentials
+
+
+def upcoming():
+    """Read a Google Calendar.
+
+    Creates a Google Calendar API service object and outputs a list of the next
+    31 days events on the user's calendar.
+    """
+    credentials = get_credentials()
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('calendar', 'v3', http=http)
+    calfor(service, 'kevetduncombe@gmail.com')
+    calfor(service, 'sandyduncombe@gmail.com')
+
+
+def calfor(service, calendarId):
+    start = now.isoformat()
+    end = (now+datetime.timedelta(days=31)).isoformat()
+    eventsResult = service.events().list(
+        calendarId=calendarId, timeMin=start, timeMax=end, singleEvents=True,
+        orderBy='startTime').execute()
+    events = eventsResult.get('items', [])
+
+    for event in events:
+        day = event['start'].get('date')
+        msg = event['summary']
+        if event['start'].get('dateTime'):
+            t=event['start'].get('dateTime')
+            t=datetime.datetime.strptime(t[0:22]+t[23:],'%Y-%m-%dT%H:%M:%S%z')
+            day = str(t.date())[0:10]
+            msg += t.strftime(" at %I:%M %p")
+        print(f'''{day}: {msg} ({calendarId})''')
+
+
+def add_appt(when,msg):
+    """Add appointment to Google Calendar.
+    """
+
+    if when <= now:
+        if flags.verbose:
+            print(when,"is in the past")
+        return
+    start = when.isoformat()
+    end = (when+datetime.timedelta(hours=1)).isoformat()
+    credentials = get_credentials()
+    http = credentials.authorize(httplib2.Http())
+    service = discovery.build('calendar', 'v3', http=http)
+
+    #check for conflict
+    eventsResult = service.events().list(
+        calendarId='primary', timeMin=start, timeMax=end,
+        singleEvents=True, orderBy='startTime').execute()
+    events = eventsResult.get('items', [])
+    for event in events:
+        if msg != event['summary']:
+            print("'"+msg+"' conflicts with '"+event['summary']+"' at "+start)
+        elif flags.verbose:
+            print(msg,"at",start,"already exists")
+    if events:
+        return
+
+    event = {
+            'summary': msg,
+            'start': {
+                'dateTime': start,
+                },
+            'end': {
+                'dateTime': end,
+                }
+            }
+    if flags.dryrun:
+        print("would have created",when,msg)
+        return
+    event = service.events().insert(calendarId='primary', body=event).execute()
+    if flags.verbose:
+        print('Event created:',event.get('htmlLink'))
+
+
+def setonappt():
+    """Read Seton appointment email from file and return (when,msg)."""
+    msg = email.parser.BytesParser(
+            policy=email.policy.default).parse(flags.setonappt)
+    soup = BeautifulSoup(msg.get_payload(), 'html.parser')
+    # Jun 20, 2017 at 10:00 AM
+    cursor = soup.find(string=re.compile(r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{1,2}, \d{4} at \d{1,2}:\d\d (?:AM|PM)"))
+    cursor = cursor.find_parent('tr')
+    when = cursor.get_text().strip() # Jun 20, 2017 at 10:00 AM
+    when = datetime.datetime.strptime(when,"%b %d, %Y at %I:%M %p")
+    when = localtz.localize(when)
+    cursor = cursor.find_next_sibling('tr')
+    msg = cursor.get_text().strip() # Lisa Stevens, PT
+    return (when, msg)
+
+
+def speroappt():
+    """Read Spero appointment email from file and return (when,msg)."""
+    msg = email.parser.BytesParser(
+            policy=email.policy.default).parse(flags.speroappt)
+    # Tuesday, April 3rd at 9:00am
+    msg = msg.get_body(["related","plain"]).get_content()
+    m = re.search(r"(January|February|March|April|May|June|July|August|September|October|November|December) (\d{1,2}).* at (\d{1,2}:\d\d(?:am|pm))",msg)
+    # April 3rd, 2017 at 9:00am
+    when = "{} {}, {} at {}".format(m.group(1),m.group(2),now.year,m.group(3))
+    when = datetime.datetime.strptime(when,"%B %d, %Y at %I:%M%p")
+    when = localtz.localize(when)
+    if when < now:
+        when = when.replace(year=when.year+1)
+    msg = "Spero Rehab - Austin"
+    return (when, msg)
+
+
+def argsappt():
+    """Read appointment from command line and return (when,msg)."""
+    msg = " ".join(flags.word)
+    d = re.search(r"(?:on\s+)?(\d{4})[-/](\d\d?)[-/](\d\d?)",msg,flags=re.I)
+    if d:
+        yr, mo, dy = int(d.group(1)), int(d.group(2)), int(d.group(3))
+        msg = msg[:d.start()] + msg[d.end():]
+    else:
+        d = re.search(r"(?:on\s+)?(\d\d?)[-/](\d\d?)[-/](\d\d)",msg,flags=re.I)
+        if d:
+            mo, dy, yr = int(d.group(1)), int(d.group(2)), int(d.group(3))+2000
+            msg = msg[:d.start()] + msg[d.end():]
+        else:
+            mo, dy, yr = now.month, now.day, now.year
+    t = re.search(r"(?:at\s+)?(\d\d?):?(\d\d)?\s*(am|pm)?", msg, flags=re.I)
+    if t:
+        hr, mi, ap = int(t.group(1)), int(t.group(2) or 0), t.group(3) or ''
+        msg = msg[:t.start()] + msg[t.end():]
+    else:
+        hr, mi, ap = 8, 0, 'am'
+
+    if ap:
+        ap = ap.lower()
+    elif t.group(1)[:1] == '0':
+        ap = "am"
+    elif hr < 6 or hr == 12:
+        ap = "pm"
+    else:
+        ap = "am"
+
+    if hr < 12 and ap == "pm":
+        hr += 12
+    elif hr == 12 and ap == "am":
+        hr = 0
+    return (localtz.localize(datetime.datetime(yr,mo,dy,hr,mi)), msg.strip())
+
+
+if __name__ == '__main__':
+    if flags.setonappt:
+        when,msg = setonappt()
+        add_appt(when,msg)
+    elif flags.speroappt:
+        when,msg = speroappt()
+        add_appt(when,msg)
+    elif flags.word:
+        when,msg = argsappt()
+        add_appt(when,msg)
+    else:
+        upcoming()

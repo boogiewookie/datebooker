@@ -1,0 +1,2 @@
+#!/bin/sh
+datebooker | datebook -h - /home/dunc/.dates > /usr/local/www/data/datebook.html
