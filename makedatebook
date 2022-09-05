@@ -1,2 +1,6 @@
 #!/bin/sh
-datebooker | datebook -h - /home/dunc/.dates > /usr/local/www/data/datebook.html
+cd ~dunc/src/datebooker
+./datebooker | datebook -h - /home/dunc/.dates > datebook.html
+scp datebook.html root@cervo:/root
+ssh root@cervo chown 80:80 /root/datebook.html
+ssh root@cervo bastille cp wiki /root/datebook.html usr/local/www/data
