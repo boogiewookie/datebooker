@@ -1,4 +1,4 @@
-#!/home/dunc/src/datebooker/venv/bin/python3
+#!/home/dunc/src/datebooker/.datebooker//bin/python3
 import argparse
 import httplib2
 import os.path
