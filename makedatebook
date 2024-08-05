@@ -1,6 +1,6 @@
 #!/bin/sh
 cd ~dunc/src/datebooker
-./datebooker | datebook -c -h - /home/dunc/.dates > datebook.html
+.datebooker/bin/python3 datebooker | datebook -c -h - /home/dunc/.dates > datebook.html
 scp datebook.html root@cervo:/root
 ssh root@cervo chown 80:80 /root/datebook.html
 ssh root@cervo bastille cp wikicervo /root/datebook.html usr/local/www/data
