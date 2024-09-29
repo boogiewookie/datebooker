@@ -1,4 +1,4 @@
-DEST	      = ${HOME}/bin
+DEST	      = ${HOME}/.local/bin
 
 PROGRAM	      = makedatebook
 
